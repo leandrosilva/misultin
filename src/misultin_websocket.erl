@@ -3,7 +3,7 @@
 %
 % >-|-|-(°>
 % 
-% Copyright (C) 2010, Roberto Ostinelli <roberto@ostinelli.net>, Joe Armstrong.
+% Copyright (C) 2011, Roberto Ostinelli <roberto@ostinelli.net>, Joe Armstrong.
 % All rights reserved.
 %
 % Code portions from Joe Armstrong have been originally taken under MIT license at the address:
@@ -31,10 +31,10 @@
 % POSSIBILITY OF SUCH DAMAGE.
 % ==========================================================================================================
 -module(misultin_websocket).
--vsn("0.6.2").
+-vsn("0.7.1-dev").
 
 % API
--export([check/2, connect/3]).
+-export([check/2, connect/4]).
 
 
 % includes
@@ -53,7 +53,7 @@ check(_Path, Headers) ->
 	check_websockets(VsnSupported, Headers).
 
 % Connect and handshake with Websocket.
-connect(Req, #ws{vsn = Vsn, socket = Socket, socket_mode = SocketMode, path = Path, headers = Headers, ws_autoexit = WsAutoExit} = Ws, WsLoop) ->
+connect(ServerRef, Req, #ws{vsn = Vsn, socket = Socket, socket_mode = SocketMode, path = Path, headers = Headers, ws_autoexit = WsAutoExit} = Ws, WsLoop) ->
 	?LOG_DEBUG("building handshake response", []),
 	% get data
 	Origin = misultin_utility:header_get_value('Origin', Headers),
@@ -63,15 +63,15 @@ connect(Req, #ws{vsn = Vsn, socket = Socket, socket_mode = SocketMode, path = Pa
 	% send handshake back
 	misultin_socket:send(Socket, HandshakeServer, SocketMode),
 	% add data to ws record and spawn controlling process
-	Ws0 = misultin_ws:new(Ws#ws{origin = Origin, host = Host}, self()),
+	Ws0 = {misultin_ws, Ws#ws{origin = Origin, host = Host}, self()},
 	WsHandleLoopPid = spawn(fun() -> WsLoop(Ws0) end),
 	erlang:monitor(process, WsHandleLoopPid),
 	% set opts
-	misultin_socket:setopts(Socket, [{packet, 0}, {active, true}], SocketMode),
+	misultin_socket:setopts(Socket, [{packet, 0}], SocketMode),
 	% add main websocket pid to misultin server reference
-	misultin:persistent_socket_pid_add(self()),
+	misultin:ws_pid_ref_add(ServerRef, self()),
 	% start listening for incoming data
-	ws_loop(Socket, none, WsHandleLoopPid, SocketMode, WsAutoExit).	
+	ws_loop(ServerRef, Socket, none, WsHandleLoopPid, SocketMode, WsAutoExit).	
 	
 % ============================ /\ API ======================================================================
 
@@ -116,8 +116,7 @@ check_websocket({'draft-hixie', 68} = Vsn, Headers) ->
 		_RemainingHeaders ->
 			?LOG_DEBUG("not protocol ~p, remaining headers: ~p", [Vsn, _RemainingHeaders]),
 			false
-	end;
-check_websocket(_Vsn, _Headers) -> false. % not implemented
+	end.
 
 % Function: true | [{RequiredTag, RequiredVal}, ..]
 % Description: Check if headers correspond to headers requirements.
@@ -158,20 +157,28 @@ handshake({'draft-hixie', 76}, #req{socket = Sock, socket_mode = SocketMode}, He
 	end,
 	?LOG_DEBUG("got content in body of websocket request: ~p", [Body]),	
 	% prepare handhsake response
+	WsMode = case SocketMode of
+		ssl -> "wss";
+		_ -> "ws"
+	end,
 	["HTTP/1.1 101 WebSocket Protocol Handshake\r\n",
 		"Upgrade: WebSocket\r\n",
 		"Connection: Upgrade\r\n",
 		"Sec-WebSocket-Origin: ", Origin, "\r\n",
-		"Sec-WebSocket-Location: ws://", lists:concat([Host, Path]), "\r\n\r\n",
+		"Sec-WebSocket-Location: ", WsMode, "://", lists:concat([Host, Path]), "\r\n\r\n",
 		build_challenge({'draft-hixie', 76}, {Key1, Key2, Body})
 	];
-handshake({'draft-hixie', 68}, _Req, _Headers, {Path, Origin, Host}) ->
+handshake({'draft-hixie', 68}, #req{socket_mode = SocketMode} = _Req, _Headers, {Path, Origin, Host}) ->
 	% prepare handhsake response
+	WsMode = case SocketMode of
+		ssl -> "wss";
+		_ -> "ws"
+	end,
 	["HTTP/1.1 101 Web Socket Protocol Handshake\r\n",
 		"Upgrade: WebSocket\r\n",
 		"Connection: Upgrade\r\n",
 		"WebSocket-Origin: ", Origin , "\r\n",
-		"WebSocket-Location: ws://", lists:concat([Host, Path]), "\r\n\r\n"
+		"WebSocket-Location: ", WsMode, "://", lists:concat([Host, Path]), "\r\n\r\n"
 	].
 
 % Function: List
@@ -182,21 +189,27 @@ build_challenge({'draft-hixie', 76}, {Key1, Key2, Key3}) ->
 	Ikey2 = [D || D <- Key2, $0 =< D, D =< $9],
 	Blank1 = length([D || D <- Key1, D =:= 32]),
 	Blank2 = length([D || D <- Key2, D =:= 32]),
-	Part1 = list_to_integer(Ikey1) div Blank1,
-	Part2 = list_to_integer(Ikey2) div Blank2,
+	Part1 = erlang:list_to_integer(Ikey1) div Blank1,
+	Part2 = erlang:list_to_integer(Ikey2) div Blank2,
 	Ckey = <<Part1:4/big-unsigned-integer-unit:8, Part2:4/big-unsigned-integer-unit:8, Key3/binary>>,
 	erlang:md5(Ckey).
 
 % Main Websocket loop
-ws_loop(Socket, Buffer, WsHandleLoopPid, SocketMode, WsAutoExit) ->
-	?LOG_DEBUG("websocket loop", []),
+ws_loop(ServerRef, Socket, Buffer, WsHandleLoopPid, SocketMode, WsAutoExit) ->
+	misultin_socket:setopts(Socket, [{active, once}], SocketMode),
 	receive
 		{tcp, Socket, Data} ->
-			handle_data(Buffer, binary_to_list(Data), Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
+			handle_data(Buffer, binary_to_list(Data), Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef);
+		{ssl, Socket, Data} ->
+			handle_data(Buffer, binary_to_list(Data), Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef);
 		{tcp_closed, Socket} ->
 			?LOG_DEBUG("tcp connection was closed, exit", []),
 			% close websocket and custom controlling loop
-			websocket_close(Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
+			websocket_close(ServerRef, Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
+		{ssl_closed, Socket} ->
+			?LOG_DEBUG("ssl tcp connection was closed, exit", []),
+			% close websocket and custom controlling loop
+			websocket_close(ServerRef, Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
 		{'DOWN', Ref, process, WsHandleLoopPid, Reason} ->
 			case Reason of
 				normal ->
@@ -207,37 +220,40 @@ ws_loop(Socket, Buffer, WsHandleLoopPid, SocketMode, WsAutoExit) ->
 			% demonitor
 			erlang:demonitor(Ref),
 			% close websocket and custom controlling loop
-			websocket_close(Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
+			websocket_close(ServerRef, Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
 		{send, Data} ->
 			?LOG_DEBUG("sending data to websocket: ~p", [Data]),
 			misultin_socket:send(Socket, [0, Data, 255], SocketMode),
-			ws_loop(Socket, Buffer, WsHandleLoopPid, SocketMode, WsAutoExit);
+			ws_loop(ServerRef, Socket, Buffer, WsHandleLoopPid, SocketMode, WsAutoExit);
 		shutdown ->
 			?LOG_DEBUG("shutdown request received, closing websocket with pid ~p", [self()]),
 			% close websocket and custom controlling loop
-			websocket_close(Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
+			websocket_close(ServerRef, Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
 		_Ignored ->
 			?LOG_WARNING("received unexpected message, ignoring: ~p", [_Ignored]),
-			ws_loop(Socket, Buffer, WsHandleLoopPid, SocketMode, WsAutoExit)
+			ws_loop(ServerRef, Socket, Buffer, WsHandleLoopPid, SocketMode, WsAutoExit)
 	end.
 
 % Buffering and data handling
-handle_data(none, [0|T], Socket, WsHandleLoopPid, SocketMode, WsAutoExit) ->
-	handle_data([], T, Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
-handle_data(none, [], Socket, WsHandleLoopPid, SocketMode, WsAutoExit) ->
-	ws_loop(Socket, none, WsHandleLoopPid, SocketMode, WsAutoExit);
-handle_data(L, [255|T], Socket, WsHandleLoopPid, SocketMode, WsAutoExit) ->
+handle_data(none, [0|T], Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef) ->
+	handle_data([], T, Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef);
+handle_data(none, [], Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef) ->
+	ws_loop(ServerRef, Socket, none, WsHandleLoopPid, SocketMode, WsAutoExit);
+handle_data(none, [255|T], Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef) ->
+	websocket_close(ServerRef, Socket, WsHandleLoopPid, SocketMode, WsAutoExit),
+	handle_data(none, T, Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef);
+handle_data(L, [255|T], Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef) ->
 	WsHandleLoopPid ! {browser, lists:reverse(L)},
-	handle_data(none, T, Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
-handle_data(L, [H|T], Socket, WsHandleLoopPid, SocketMode, WsAutoExit) ->
-	handle_data([H|L], T, Socket, WsHandleLoopPid, SocketMode, WsAutoExit);
-handle_data([], L, Socket, WsHandleLoopPid, SocketMode, WsAutoExit) ->
-	ws_loop(Socket, L, WsHandleLoopPid, SocketMode, WsAutoExit).
+	handle_data(none, T, Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef);
+handle_data(L, [H|T], Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef) ->
+	handle_data([H|L], T, Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef);
+handle_data([], L, Socket, WsHandleLoopPid, SocketMode, WsAutoExit, ServerRef) ->
+	ws_loop(ServerRef, Socket, L, WsHandleLoopPid, SocketMode, WsAutoExit).
 
 % Close socket and custom handling loop dependency
-websocket_close(Socket, WsHandleLoopPid, SocketMode, WsAutoExit) ->
+websocket_close(ServerRef, Socket, WsHandleLoopPid, SocketMode, WsAutoExit) ->
 	% remove main websocket pid from misultin server reference
-	misultin:persistent_socket_pid_remove(self()),
+	misultin:ws_pid_ref_remove(ServerRef, self()),
 	case WsAutoExit of
 		true ->
 			% kill custom handling loop process

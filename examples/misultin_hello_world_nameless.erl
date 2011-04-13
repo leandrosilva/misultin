@@ -1,5 +1,5 @@
 % ==========================================================================================================
-% MISULTIN - Example: Hello World SSL.
+% MISULTIN - Example: Hello World with a non-registered misultin server.
 %
 % >-|-|-(°>
 % 
@@ -27,25 +27,21 @@
 % NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 % POSSIBILITY OF SUCH DAMAGE.
 % ==========================================================================================================
--module(misultin_ssl).
--export([start/1, stop/0]).
+-module(misultin_hello_world_nameless).
+-export([start/1, stop/1]).
 
-% start misultin http server
+% Description: Start misultin http server
+% For example:
+% {ok, Pid} = misultin_hello_world_nameless:start(8080).
 start(Port) ->
-	misultin:start_link([{port, Port}, {loop, fun(Req) -> handle_http(Req) end},
-		{ssl, [
-			{certfile, "../priv/test_certificate.pem"},
-			{keyfile, "../priv/test_privkey.pem"},
-			{password, "misultin"}
-		]}
-	]).
+	misultin:start_link([{port, Port}, {name, false}, {loop, fun(Req) -> handle_http(Req) end}]).
 
-% stop misultin
-stop() ->
-	misultin:stop().
+% Description: Stop misultin
+% Continuing the above example:
+% misultin_hello_world_nameless:stop(Pid). 
+stop(ServerPid) ->
+	misultin:stop(ServerPid).
 
 % callback on request received
 handle_http(Req) ->	
-	% output
-	Req:ok("Hello World SSL.").
-
+	Req:ok("Hello World.").

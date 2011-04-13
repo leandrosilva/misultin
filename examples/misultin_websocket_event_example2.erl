@@ -3,7 +3,7 @@
 %
 % >-|-|-(°>
 % 
-% Copyright (C) 2010, Roberto Ostinelli <roberto@ostinelli.net>
+% Copyright (C) 2010, Leandro Silva
 % All rights reserved.
 %
 % BSD License
@@ -78,18 +78,20 @@ handle_http(Req, Port) ->
 						addStatus(\"sorry, your browser does not support websockets.\");
 					}
 				}
+				function disconnect(){
+					ws.close();
+				}
 				function send(msg){
-				  ws.send(msg);
+					ws.send(msg);
 					addStatus(\"sent message to server: '\"+ msg +\"'!\");
 				}
 			</script>
 		</head>
 		<body>
-		  <form method=\"POST\">
-		    <input type=\"submit\" value=\"connect\" onclick=\"connect(); return false;\"/>
-		    <input type=\"button\" value=\"send\" onclick=\"send(message.value); return false;\"/>
-		    <input type=\"text\" name=\"message\"/>
-		  </form>
+			<input type=\"submit\" value=\"connect\" onclick=\"connect(); return false;\"/>
+			<input type=\"submit\" value=\"disconnect\" onclick=\"disconnect(); return false;\"/>
+			<input type=\"text\" id=\"message\" name=\"message\"/>
+			<input type=\"button\" value=\"send\" onclick=\"send(document.getElementById('message').value); return false;\"/>
 			<div id=\"status\"></div>
 		</body>
 	</html>"]).

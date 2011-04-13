@@ -1,5 +1,5 @@
 % ==========================================================================================================
-% MISULTIN - Example: Hello World SSL.
+% MISULTIN - Example: Hello World with two custom name registered misultin servers.
 %
 % >-|-|-(°>
 % 
@@ -27,25 +27,21 @@
 % NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 % POSSIBILITY OF SUCH DAMAGE.
 % ==========================================================================================================
--module(misultin_ssl).
--export([start/1, stop/0]).
+-module(misultin_multiple_servers_custom_name).
+-export([start/2, stop/0]).
 
-% start misultin http server
-start(Port) ->
-	misultin:start_link([{port, Port}, {loop, fun(Req) -> handle_http(Req) end},
-		{ssl, [
-			{certfile, "../priv/test_certificate.pem"},
-			{keyfile, "../priv/test_privkey.pem"},
-			{password, "misultin"}
-		]}
-	]).
+% Description: Start misultin http servers
+start(Port1, Port2) ->
+	% start misultin1
+	misultin:start_link([{port, Port1}, {name, misultin1}, {loop, fun(Req) -> handle_http(Req, misultin1) end}]),
+	% start misultin2
+	misultin:start_link([{port, Port2}, {name, misultin2}, {loop, fun(Req) -> handle_http(Req, misultin2) end}]).
 
-% stop misultin
+% Description: Stop misultin servers
 stop() ->
-	misultin:stop().
+	misultin:stop(misultin1),
+	misultin:stop(misultin2).
 
 % callback on request received
-handle_http(Req) ->	
-	% output
-	Req:ok("Hello World SSL.").
-
+handle_http(Req, RegName) ->	
+	Req:ok(["Hello World from ", atom_to_list(RegName)]).
